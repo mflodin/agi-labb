@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<title>AGI Labb - Martin Flodin</title>
+<canvas id="scene-canvas" style="border: none;" width="800" height="600">Loading scene...</canvas>
+<script src="script/glMatrix-0.9.5.min.js"></script>
+<script src="script/webgl-utils.js"></script>
+<script id="lighting-and-reflection-fs" type="x-shader/x-fragment">
+    #ifdef GL_ES
+    precision highp float;
+    #endif
+
+    varying vec2 vTextureCoord;
+    varying vec3 v3DTextureCoord;
+    varying vec3 vTransformedNormal;
+    varying vec4 vPosition;
+
+    uniform float uMaterialShininess;
+
+    uniform vec3 uAmbientColor;
+
+    uniform vec3 uPointLightingLocation;
+    uniform vec3 uPointLightingSpecularColor;
+    uniform vec3 uPointLightingDiffuseColor;
+
+    uniform sampler2D uSampler;
+    uniform samplerCube uEnvSampler;
+
+
+    void main(void) {
+        vec3 lightWeighting;
+        vec3 lightDirection = normalize(uPointLightingLocation - vPosition.xyz);
+        vec3 normal = normalize(vTransformedNormal);
+
+        float specularLightWeighting = 0.0;
+        vec3 eyeDirection = normalize(-vPosition.xyz);
+        vec3 reflectionDirection = reflect(-lightDirection, normal);
+
+        specularLightWeighting = pow(max(dot(reflectionDirection, eyeDirection), 0.0), uMaterialShininess);
+
+        float diffuseLightWeighting = max(dot(normal, lightDirection), 0.0);
+        lightWeighting = uAmbientColor
+            + uPointLightingSpecularColor * specularLightWeighting
+            + uPointLightingDiffuseColor * diffuseLightWeighting;
+
+        vec4 fragmentColor;
+        fragmentColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+        vec4 textureColor = vec4(fragmentColor.rgb * lightWeighting, fragmentColor.a);
+        vec4 reflectionColor = textureCube(uEnvSampler, v3DTextureCoord);
+        gl_FragColor = vec4((reflectionColor.rgb * 0.5 + textureColor.rgb * 0.5), textureColor.a);
+    }
+</script>
+
+<script id="lighting-and-reflection-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec3 aVertexNormal;
+    attribute vec2 aTextureCoord;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform mat3 uNMatrix;
+
+    varying vec2 vTextureCoord;
+    varying vec3 v3DTextureCoord;
+    varying vec3 vTransformedNormal;
+    varying vec4 vPosition;
+
+
+    void main(void) {
+        vPosition = uMVMatrix * vec4(aVertexPosition, 1.0);
+        gl_Position = uPMatrix * vPosition;
+        vTextureCoord = aTextureCoord;
+        vTransformedNormal = normalize(uNMatrix * aVertexNormal);
+        v3DTextureCoord = reflect(vPosition.xyz, vTransformedNormal);
+
+    }
+</script>
+
+<script id="reflection-fs" type="x-shader/x-fragment">
+    #ifdef GL_ES
+    precision highp float;
+    #endif
+
+    varying vec3 v3DTextureCoord;
+    uniform samplerCube uEnvSampler;
+
+
+    void main(void) {
+        gl_FragColor = textureCube(uEnvSampler, v3DTextureCoord);
+    }
+</script>
+
+<script id="reflection-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec3 aVertexNormal;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform mat3 uNMatrix;
+
+    varying vec3 v3DTextureCoord;
+    varying vec4 vPosition;
+
+
+    void main(void) {
+        vec3 vTransformedNormal = normalize(mat3(uMVMatrix) * aVertexNormal);
+        vPosition = uMVMatrix * vec4(aVertexPosition, 1.0);
+        gl_Position = uPMatrix * vPosition;
+        v3DTextureCoord = reflect(vPosition.xyz, vTransformedNormal);
+    }
+</script>
+
+
+<script type="text/javascript">
+    (function() {
+    var gl;
+
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("webgl", {stencil: true})
+                || canvas.getContext("experimental-webgl", {stencil: true});
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "lighting-and-reflection-fs");
+        var vertexShader = getShader(gl, "lighting-and-reflection-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
+        gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.nMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+        shaderProgram.envSamplerUniform = gl.getUniformLocation(shaderProgram, "uEnvSampler");
+        shaderProgram.materialShininessUniform = gl.getUniformLocation(shaderProgram, "uMaterialShininess");
+        shaderProgram.ambientColorUniform = gl.getUniformLocation(shaderProgram, "uAmbientColor");
+        shaderProgram.pointLightingLocationUniform = gl.getUniformLocation(shaderProgram, "uPointLightingLocation");
+        shaderProgram.pointLightingSpecularColorUniform = gl.getUniformLocation(shaderProgram, "uPointLightingSpecularColor");
+        shaderProgram.pointLightingDiffuseColorUniform = gl.getUniformLocation(shaderProgram, "uPointLightingDiffuseColor");
+    }
+
+
+    function handleLoadedTexture(texture) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+        gl.generateMipmap(gl.TEXTURE_2D);
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    var floor = {};
+    var teapot = {};
+    var cubeMap = {};
+
+    function initTextures() {
+        initTexture(floor, "image/glass.gif");
+        // initTexture(floor, "image/kth_logo.jpg");
+        //initTexture(teapot, "image/kth_logo.jpg");
+        initTexture(teapot, "image/metal.jpg");
+
+        cubeMap.texture = initCubeMap("image/cube-map/road/", ".jpg");
+
+    }
+
+    function initTexture(model, imageSrc){
+        model.texture = gl.createTexture();
+        model.texture.image = new Image();
+        model.texture.image.onload = function() {
+            handleLoadedTexture(model.texture);
+        }
+
+        model.texture.image.src = imageSrc;
+    }
+
+    function initCubeMap(base, suffix) {
+        gl.activeTexture(gl.TEXTURE1);
+
+        var texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        gl.uniform1i(shaderProgram.envSamplerUniform, 0);
+
+        var faces = [["posx", gl.TEXTURE_CUBE_MAP_POSITIVE_X],
+                     ["negx", gl.TEXTURE_CUBE_MAP_NEGATIVE_X],
+                     ["posy", gl.TEXTURE_CUBE_MAP_POSITIVE_Y],
+                     ["negy", gl.TEXTURE_CUBE_MAP_NEGATIVE_Y],
+                     ["posz", gl.TEXTURE_CUBE_MAP_POSITIVE_Z],
+                     ["negz", gl.TEXTURE_CUBE_MAP_NEGATIVE_Z]];
+        for (var i = 0; i < faces.length; i++) {
+            var face = faces[i][1];
+            var image = new Image();
+            image.onload = function(texture, face, image) {
+                return function() {
+                    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+                    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                    gl.texImage2D(face, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                }
+            } (texture, face, image);
+            image.src = base + faces[i][0] + suffix;
+        }
+        return texture;
+    }
+
+
+    var mvMatrix = mat4.create();
+    var mvMatrixStack = [];
+    var pMatrix = mat4.create();
+
+    function mvPushMatrix() {
+        var copy = mat4.create();
+        mat4.set(mvMatrix, copy);
+        mvMatrixStack.push(copy);
+    }
+
+    function mvPopMatrix() {
+        if (mvMatrixStack.length == 0) {
+            throw "Invalid popMatrix!";
+        }
+        mvMatrix = mvMatrixStack.pop();
+    }
+
+    function setMatrixUniforms() {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+        var normalMatrix = mat3.create();
+        mat4.toInverseMat3(mvMatrix, normalMatrix);
+        mat3.transpose(normalMatrix);
+        gl.uniformMatrix3fv(shaderProgram.nMatrixUniform, false, normalMatrix);
+    }
+
+    function degToRad(degrees) {
+        return degrees * Math.PI / 180;
+    }
+
+
+
+    function handleLoadedTeapot(teapotData) {
+        teapot.vertexNormalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapot.vertexNormalBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexNormals), gl.STATIC_DRAW);
+        teapot.vertexNormalBuffer.itemSize = 3;
+        teapot.vertexNormalBuffer.numItems = teapotData.vertexNormals.length / 3;
+
+        teapot.vertexTextureCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapot.vertexTextureCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexTextureCoords), gl.STATIC_DRAW);
+        teapot.vertexTextureCoordBuffer.itemSize = 2;
+        teapot.vertexTextureCoordBuffer.numItems = teapotData.vertexTextureCoords.length / 2;
+
+        teapot.vertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, teapot.vertexPositionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexPositions), gl.STATIC_DRAW);
+        teapot.vertexPositionBuffer.itemSize = 3;
+        teapot.vertexPositionBuffer.numItems = teapotData.vertexPositions.length / 3;
+
+        teapot.vertexIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, teapot.vertexIndexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(teapotData.indices), gl.STATIC_DRAW);
+        teapot.vertexIndexBuffer.itemSize = 1;
+        teapot.vertexIndexBuffer.numItems = teapotData.indices.length;
+
+        console.log("teapot handled");
+    }
+
+    function loadTeapot() {
+        var request = new XMLHttpRequest();
+        request.open("GET", "model/Teapot.json");
+        request.onreadystatechange = function () {
+            if (request.readyState == 4) {
+                console.log("Teapot loaded");
+                handleLoadedTeapot(JSON.parse(request.responseText));
+            }
+        }
+        request.send();
+    }
+
+    function initBuffers() {
+        floor.vertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, floor.vertexPositionBuffer);
+        var vertices = [
+             1.0,  0.0,  1.0,
+            -1.0,  0.0,  1.0,
+             1.0,  0.0, -1.0,
+            -1.0,  0.0, -1.0
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        floor.vertexPositionBuffer.itemSize = 3;
+        floor.vertexPositionBuffer.numItems = 4;
+
+        floor.vertexNormalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, floor.vertexNormalBuffer);
+        var vertexNormals = [
+          // Top face
+           0.0,  1.0,  0.0,
+           0.0,  1.0,  0.0,
+           0.0,  1.0,  0.0,
+           0.0,  1.0,  0.0
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals), gl.STATIC_DRAW);
+        floor.vertexNormalBuffer.itemSize = 3;
+        floor.vertexNormalBuffer.numItems = 4;
+
+
+        floor.vertexTextureCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, floor.vertexTextureCoordBuffer);
+        var textureRepeat = 3.0;
+        var textureCoords = [
+          0.0, 0.0,
+          0.0, textureRepeat,
+          textureRepeat, 0.0,
+          textureRepeat, textureRepeat
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+        floor.vertexTextureCoordBuffer.itemSize = 2;
+        floor.vertexTextureCoordBuffer.numItems = 4;
+
+        floor.vertexIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, floor.vertexIndexBuffer);
+        var floorVertexIndices = [
+            0, 1, 2,      1, 2, 3
+        ];
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(floorVertexIndices), gl.STATIC_DRAW);
+        floor.vertexIndexBuffer.itemSize = 1;
+        floor.vertexIndexBuffer.numItems = 6;
+    }
+   
+    var rotRight = 0.0;
+    var viewPos = [0.0, 0.0, -3.0];
+    function drawScene() {
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.uniform3f(shaderProgram.ambientColorUniform, .2, .2, .2);
+        gl.uniform3f(
+            shaderProgram.pointLightingLocationUniform, 10.0, 10.0, 20.0);
+        gl.uniform3f(
+            shaderProgram.pointLightingSpecularColorUniform, .8, .8, .8);
+        gl.uniform3f(
+            shaderProgram.pointLightingDiffuseColorUniform, .8, .8, .8);
+        gl.uniform1f(shaderProgram.materialShininessUniform, 32.0);
+
+
+
+        mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+
+        mat4.identity(mvMatrix);
+
+        mvPushMatrix();
+        mat4.translate(mvMatrix, viewPos);
+        mat4.rotate(mvMatrix, 0.4, [1, 0, 0]); // up
+        mat4.rotate(mvMatrix, degToRad(-rotRight), [0, 1, 0]); // right
+
+
+        gl.clear(gl.STENCIL_BUFFER_BIT);
+        gl.enable(gl.STENCIL_TEST);
+        gl.stencilFunc(gl.ALWAYS, 1, ~0);
+        gl.stencilOp(gl.REPLACE, gl.REPLACE, gl.REPLACE);
+        drawModel(floor);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+
+        gl.stencilFunc(gl.EQUAL, 1, ~0);
+        gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+        var teapotSize = 0.04;
+        // reflected teapot
+        mvPushMatrix();
+        mat4.translate(mvMatrix, [0.0, - 7.5 * teapotSize, .0]);
+        mat4.scale(mvMatrix, [teapotSize, -teapotSize, teapotSize]);
+        drawModel(teapot);
+        mvPopMatrix();
+        
+        // floor
+        gl.blendFunc(gl.ONE_MINUS_DST_COLOR, gl.DST_COLOR);
+        gl.enable(gl.BLEND);
+        drawModel(floor);
+        gl.disable(gl.BLEND);
+        gl.disable(gl.STENCIL_TEST);
+
+        // teapot
+        mvPushMatrix();
+        mat4.translate(mvMatrix, [0.0, 7.5 * teapotSize, .0]);
+        mat4.scale(mvMatrix, [teapotSize, teapotSize, teapotSize]);
+        drawModel(teapot);
+        mvPopMatrix();
+    }
+
+    function drawModel(model){
+        if(model.vertexPositionBuffer){
+            gl.bindBuffer(gl.ARRAY_BUFFER, model.vertexPositionBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, model.vertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+        }
+         
+        if (model.vertexNormalBuffer) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, model.vertexNormalBuffer);
+            gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, model.vertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+        }
+
+        if(model.vertexTextureCoordBuffer){
+            gl.bindBuffer(gl.ARRAY_BUFFER, model.vertexTextureCoordBuffer);
+            gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, model.vertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+        }
+
+        if(model.texture){
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, model.texture);
+            gl.uniform1i(shaderProgram.samplerUniform, 0);
+        }
+
+        if (model.vertexIndexBuffer) {
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, model.vertexIndexBuffer);
+            setMatrixUniforms();
+            gl.drawElements(gl.TRIANGLES, model.vertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+        }
+        
+
+        if(cubeMap.texture){
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_CUBE_MAP, cubeMap.texture);
+            gl.uniform1i(shaderProgram.envSamplerUniform, 1);
+        }
+       
+
+    }
+
+    var lastTime = 0;
+
+    function animate() {
+        var timeNow = new Date().getTime();
+        if (lastTime != 0) {
+            var elapsed = timeNow - lastTime;
+
+            rotRight += 0.05 * elapsed;
+        }
+        lastTime = timeNow;
+    }
+
+    function syncedAnimate() {
+        rotRight = new Date().getTime() * 0.05;
+    }
+
+    function tick() {
+        requestAnimFrame(tick);
+        drawScene();
+        animate();
+    }
+
+
+
+
+    function webGLStart() {
+        var canvas = document.getElementById("scene-canvas");
+        initGL(canvas);
+        initShaders();
+        initBuffers();
+        initTextures();
+        loadTeapot();
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+
+        tick();
+    }
+
+
+    window.onload = webGLStart;
+
+}());
+
+    function fullScreen() {
+        var canvas = document.getElementById("scene-canvas");
+        canvas.webkitRequestFullScreen(Element.ALLOW_KEYBOARD_INPUT);
+        canvas.mozRequestFullScreen();
+    }
+
+    document.getElementById("scene-canvas").onclick = fullScreen;
+</script>
